@@ -33,7 +33,7 @@ class DistributedKVStore:
 
         # The core internal application state
         self.db: dict[str, str] = {}
-        self.last_applied = 0
+        self.last_applied = -1
         self.db_lock = threading.Lock()
         
         # Mapping index -> threading.Event() 

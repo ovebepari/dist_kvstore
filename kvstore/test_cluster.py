@@ -1,5 +1,6 @@
 import time
 import threading
+import os
 from kvstore import DistributedKVStore
 
 def run_node(node_id, cluster_ports):
@@ -15,7 +16,6 @@ if __name__ == "__main__":
     }
     
     # Clean up old raft files
-    import os
     for f in os.listdir("."):
         if f.startswith("raft_node_") and f.endswith(".json"):
             os.remove(f)
@@ -24,32 +24,44 @@ if __name__ == "__main__":
     for node_id in cluster_ports:
         nodes[node_id] = run_node(node_id, cluster_ports)
     
-    print("Waiting for leader election...")
-    time.sleep(5)
-    
+    print("Waiting for leader election (max 15s)...")
     leader = None
-    for node_id, kv in nodes.items():
-        if kv.raft_node.state.name == "LEADER":
-            leader = kv
-            print(f"Node {node_id} is LEADER")
+    for _ in range(30):
+        for node_id, kv in nodes.items():
+            if kv.raft_node.state.name == "LEADER":
+                leader = kv
+                leader_id = node_id
+                print(f"Node {node_id} is LEADER")
+                break
+        if leader:
             break
+        time.sleep(0.5)
     
     if not leader:
         print("No leader elected!")
     else:
-        print("Submitting SET operation...")
-        success, _ = leader.put("hello", "world")
+        print(f"Submitting SET operation to {leader_id}...")
+        success, _ = leader.put("hello", "world", timeout=10.0)
         print(f"Put success: {success}")
         
-        time.sleep(2)
-        
-        print("Verifying data on all nodes...")
-        for node_id, kv in nodes.items():
-            # Force a read even if not leader for testing replication
-            with kv.db_lock:
-                val = kv.db.get("hello")
-                print(f"Node {node_id} value for 'hello': {val}")
+        if success:
+            print("Verifying data via GET on all nodes...")
+            time.sleep(2) # Give it a moment to replicate
+            for node_id, kv in nodes.items():
+                # Linearizable GET (only on leader)
+                if kv.raft_node.state.name == "LEADER":
+                    ok, val, _ = kv.get("hello")
+                    print(f"Node {node_id} (LEADER) GET 'hello': {val} (Success: {ok})")
+                else:
+                    # Direct DB read for verification of replication
+                    with kv.db_lock:
+                        val = kv.db.get("hello")
+                    print(f"Node {node_id} (FOLLOWER) Local DB 'hello': {val}")
+        else:
+            print("SET operation failed, skipping verification.")
 
     # Shutdown
+    print("Shutting down cluster...")
     for kv in nodes.values():
         kv.shutdown()
+    print("Done.")
