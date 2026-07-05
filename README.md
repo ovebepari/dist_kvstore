@@ -80,16 +80,37 @@ python3 test_cluster.py
 
 ## Client API
 
+The `DistributedKVStore` provides a synchronous API that ensures linearizability by interacting with the Raft leader.
+
 ```python
 from kvstore import DistributedKVStore
 
-# Initialize
+# 1. Initialize
+# Connect to the cluster by providing the local node ID and the full cluster map.
 cluster = {"node-1": 8001, "node-2": 8002, "node-3": 8003}
 kv = DistributedKVStore("node-1", cluster)
 
-# Write data (blocks for consensus)
-success, leader_id = kv.put("user:123", "Alice")
+# 2. Write Data
+# blocks until the operation is replicated to a majority of nodes.
+# Returns: (success: bool, leader_id: str | None)
+success, leader = kv.put("user:123", "Alice")
 
-# Read data (must be done on leader for linearizability)
-success, value, leader_id = kv.get("user:123")
+# 3. Read Data
+# Returns the value from the state machine. Must be called on the leader.
+# Returns: (success: bool, value: str | None, leader_id: str | None)
+success, value, leader = kv.get("user:123")
+
+# 4. Delete Data
+# blocks until the deletion is committed.
+# Returns: (success: bool, leader_id: str | None)
+success, leader = kv.delete("user:123")
+
+# 5. Shutdown
+# Gracefully stops the Raft node and the RPC server.
+kv.shutdown()
 ```
+
+### Note on Linearizability
+- **Writes (`put`, `delete`)**: These operations are proposed to the Raft log. The call blocks until the leader has successfully replicated the entry to a majority of the cluster and applied it to the local state machine.
+- **Reads (`get`)**: Currently, reads are serviced by the leader's local state machine. In a production environment, this would involve a "read index" or "lease" mechanism to ensure the leader is still current.
+- **Redirection**: If an operation is called on a follower, it returns `success=False`. The client is responsible for retrying against the leader (future updates will include automated leader discovery).

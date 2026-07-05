@@ -124,6 +124,38 @@ class DistributedKVStore:
             
         return True, None
 
+    def delete(self, key: str, timeout: float = 5.0) -> tuple[bool, str | None]:
+        """
+        DELETE path: Submits a DELETE operation to the distributed log.
+        Returns: (success_boolean, leader_id_to_redirect_to)
+        """
+        cmd_payload = json.dumps({"action": "DELETE", "key": key}).encode('utf-8')
+        
+        # Propose the delete to your real Raft layer
+        is_leader, index, term = self.raft_node.propose(cmd_payload)
+        
+        if not is_leader:
+            return False, None
+            
+        # Create a synchronization fence for this specific index
+        commit_event = threading.Event()
+        with self.commits_lock:
+            self.pending_commits[index] = commit_event
+            
+        # Block the client thread until the entry is replicated
+        logging.info(f"Delete assigned index {index}. Waiting for consensus...")
+        achieved = commit_event.wait(timeout=timeout)
+        
+        # Clean up memory mapping
+        with self.commits_lock:
+            self.pending_commits.pop(index, None)
+            
+        if not achieved:
+            logging.warning(f"⏳ Delete timeout on index {index}.")
+            return False, None
+            
+        return True, None
+
     def get(self, key: str) -> tuple[bool, str | None, str | None]:
         """
         READ path: Implements linearizable lookups.
